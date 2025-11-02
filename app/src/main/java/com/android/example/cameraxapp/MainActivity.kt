@@ -7,13 +7,14 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 import androidx.camera.core.ImageCapture
 import androidx.camera.video.Recorder
 import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
-import androidx.core.app.ActivityCompat
+import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
-import com.android.example.cameraxapp.databinding.ActivityMainBinding
+import androidx.lifecycle.viewmodel.compose.viewModel
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import android.widget.Toast
@@ -22,51 +23,54 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.core.Preview
 import androidx.camera.core.CameraSelector
 import android.util.Log
-import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCaptureException
-import androidx.camera.core.ImageProxy
 import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.MediaStoreOutputOptions
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.VideoRecordEvent
 import androidx.core.content.PermissionChecker
-import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Locale
+import com.android.example.cameraxapp.ui.CameraScreen
+import com.android.example.cameraxapp.ui.theme.CameraXAppTheme
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var viewBinding: ActivityMainBinding
-
-    private var imageCapture: ImageCapture? = null
-    private var videoCapture: VideoCapture<Recorder>? = null
-    private var recording: Recording? = null
-
+    private var previewView: PreviewView? = null
     private lateinit var cameraExecutor: ExecutorService
+    private lateinit var viewModel: CameraViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        viewBinding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(viewBinding.root)
-
-        // Request camera permissions
-        if (allPermissionsGranted()) {
-            startCamera()
-        } else {
-            requestPermissions()
-        }
-
-        // Set up the listeners for take photo and video capture buttons
-        viewBinding.imageCaptureButton.setOnClickListener { takePhoto() }
-        viewBinding.videoCaptureButton.setOnClickListener { captureVideo() }
 
         cameraExecutor = Executors.newSingleThreadExecutor()
+
+        setContent {
+            viewModel = viewModel()
+
+            CameraXAppTheme {
+                CameraScreen(
+                    onPreviewViewCreated = { preview ->
+                        previewView = preview
+                        // Start camera after permissions granted
+                        if (allPermissionsGranted()) {
+                            startCamera(viewModel)
+                        } else {
+                            requestPermissions()
+                        }
+                    },
+                    onTakePhoto = { takePhoto(viewModel) },
+                    onCaptureVideo = { captureVideo(viewModel) },
+                    isRecording = viewModel.isRecording
+                )
+            }
+        }
     }
 
-    private fun takePhoto() {
+    private fun takePhoto(viewModel: CameraViewModel) {
         // Get a stable reference of the modifiable image capture use case
-        val imageCapture = imageCapture ?: return
+        val imageCapture = viewModel.imageCapture ?: return
 
         // Create time stamped name and MediaStore entry.
         val name = SimpleDateFormat(FILENAME_FORMAT, Locale.US)
@@ -107,16 +111,14 @@ class MainActivity : ComponentActivity() {
     }
 
     // Implements VideoCapture use case, including start and stop capturing.
-    private fun captureVideo() {
-        val videoCapture = this.videoCapture ?: return
+    private fun captureVideo(viewModel: CameraViewModel) {
+        val videoCapture = viewModel.videoCapture ?: return
 
-        viewBinding.videoCaptureButton.isEnabled = false
-
-        val curRecording = recording
+        val curRecording = viewModel.recording
         if (curRecording != null) {
             // Stop the current recording session.
             curRecording.stop()
-            recording = null
+            viewModel.recording = null
             return
         }
 
@@ -135,7 +137,7 @@ class MainActivity : ComponentActivity() {
             .Builder(contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
             .setContentValues(contentValues)
             .build()
-        recording = videoCapture.output
+        viewModel.recording = videoCapture.output
             .prepareRecording(this, mediaStoreOutputOptions)
             .apply {
                 if (PermissionChecker.checkSelfPermission(this@MainActivity,
@@ -148,10 +150,7 @@ class MainActivity : ComponentActivity() {
             .start(ContextCompat.getMainExecutor(this)) { recordEvent ->
                 when(recordEvent) {
                     is VideoRecordEvent.Start -> {
-                        viewBinding.videoCaptureButton.apply {
-                            text = getString(R.string.stop_capture)
-                            isEnabled = true
-                        }
+                        viewModel.isRecording = true
                     }
                     is VideoRecordEvent.Finalize -> {
                         if (!recordEvent.hasError()) {
@@ -161,21 +160,19 @@ class MainActivity : ComponentActivity() {
                                 .show()
                             Log.d(TAG, msg)
                         } else {
-                            recording?.close()
-                            recording = null
+                            viewModel.recording?.close()
+                            viewModel.recording = null
                             Log.e(TAG, "Video capture ends with error: " +
                                     "${recordEvent.error}")
                         }
-                        viewBinding.videoCaptureButton.apply {
-                            text = getString(R.string.start_capture)
-                            isEnabled = true
-                        }
+                        viewModel.isRecording = false
                     }
                 }
             }
     }
 
-    private fun startCamera() {
+    private fun startCamera(viewModel: CameraViewModel) {
+        val preview = previewView ?: return
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
         cameraProviderFuture.addListener({
@@ -183,19 +180,19 @@ class MainActivity : ComponentActivity() {
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
 
             // Preview
-            val preview = Preview.Builder()
+            val previewUseCase = Preview.Builder()
                 .build()
                 .also {
-                    it.setSurfaceProvider(viewBinding.viewFinder.surfaceProvider)
+                    it.setSurfaceProvider(preview.surfaceProvider)
                 }
 
             val recorder = Recorder.Builder()
                 .setQualitySelector(QualitySelector.from(Quality.HIGHEST,
                     FallbackStrategy.higherQualityOrLowerThan(Quality.SD)))
                 .build()
-            videoCapture = VideoCapture.withOutput(recorder)
+            viewModel.videoCapture = VideoCapture.withOutput(recorder)
 
-            imageCapture = ImageCapture.Builder().build()
+            viewModel.imageCapture = ImageCapture.Builder().build()
 
             // Select back camera as a default
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
@@ -206,7 +203,7 @@ class MainActivity : ComponentActivity() {
 
                 // Bind use cases to camera
                 cameraProvider.bindToLifecycle(
-                    this, cameraSelector, preview, imageCapture, videoCapture)
+                    this, cameraSelector, previewUseCase, viewModel.imageCapture, viewModel.videoCapture)
 
             } catch(exc: Exception) {
                 Log.e(TAG, "Use case binding failed", exc)
@@ -230,7 +227,7 @@ class MainActivity : ComponentActivity() {
                     "Permission request denied",
                     Toast.LENGTH_SHORT).show()
             } else {
-                startCamera()
+                startCamera(viewModel)
             }
         }
 
