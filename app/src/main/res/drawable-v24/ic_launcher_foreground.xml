@@ -36,10 +36,8 @@
       </path>
 
       <!-- Inner black circle (creates the ring effect) -->
-      <circle
-          android:cx="54"
-          android:cy="54"
-          android:radius="33"
+      <path
+          android:pathData="M54,54m-33,0a33,33 0,1 1,66 0a33,33 0,1 1,-66 0"
           android:fillColor="#000000"/>
 
       <!-- Subtle inner shadow for depth -->
